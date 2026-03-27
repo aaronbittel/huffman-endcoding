@@ -20,13 +20,19 @@ struct Node {
     Node* right;
 };
 
+typedef struct {
+    size_t n_bits;
+    size_t data;
+} BitNum;
+
 #define GLOBAL_NODE_POOL_CAPACITY 8096
 static Node global_node_pool[GLOBAL_NODE_POOL_CAPACITY];
 static size_t global_node_pool_count = 0;
 
+Node* generate_huffman_tree(Node** nodes, size_t nodes_count);
 void count_file_byte_freq(FILE* f, size_t freq[256]);
 void count_byte_freq(const u8* data, size_t length, size_t freq[256]);
-Node* generate_huffman_tree(Node** nodes, size_t nodes_count);
+void populate_lookup_table(BitNum* byte_lookup_table, Node* root, BitNum bitnum);
 void sort_nodes(Node** nodes, size_t length);
 void swap_nodes(Node** nodes, size_t i, size_t j);
 void freqs_to_nodes(size_t freq[256], Node** nodes, size_t* nodes_count);
@@ -34,6 +40,9 @@ void print_nodes(Node** nodes, size_t length);
 void print_tree(Node* root, int indent);
 void print_pad(int indent);
 Node* store_node_in_pool(Node node);
+void append_bit(BitNum* bitnum, char bit);
+bool is_leaf(Node* node);
+void print_bits(size_t num, size_t len);
 
 int main(int argc, char** argv) {
     if (argc != 2) {
@@ -48,6 +57,8 @@ int main(int argc, char** argv) {
     size_t freqs[256] = {0};
 
     count_file_byte_freq(f, freqs);
+    if (fclose(f) == EOF) perror("close failed");
+
     for (size_t i = 0; i < 256; ++i) {
         if (freqs[i] == 0) continue;
         printf("%c => %zu\n", (char)i, freqs[i]);
@@ -60,7 +71,17 @@ int main(int argc, char** argv) {
     Node* root = generate_huffman_tree(nodes, nodes_count);
     print_tree(root, 0);
 
-    if (fclose(f) == EOF) perror("close failed");
+    BitNum byte_lookup_table[256] = {0};
+    BitNum bitnum = {0};
+    populate_lookup_table(byte_lookup_table, root, bitnum);
+
+    for (size_t i = 0; i < 256; ++i) {
+        BitNum bitnum = byte_lookup_table[i];
+        if (bitnum.n_bits == 0) continue;
+        printf("%c ", (char)i);
+        print_bits(bitnum.data, bitnum.n_bits);
+    }
+
     return 0;
 }
 
@@ -105,6 +126,21 @@ void count_byte_freq(const u8* data, size_t length, size_t freq[256]) {
     for (size_t i = 0; i < length; ++i) {
         freq[data[i]] += 1;
     }
+}
+
+void populate_lookup_table(BitNum* byte_lookup_table, Node* root, BitNum bitnum) {
+    if (is_leaf(root)) {
+        byte_lookup_table[root->byte] = bitnum;
+        return;
+    }
+
+    BitNum left_bitnum = bitnum;
+    append_bit(&left_bitnum, 0);
+    populate_lookup_table(byte_lookup_table, root->left, left_bitnum);
+
+    BitNum right_bitnum = bitnum;
+    append_bit(&right_bitnum, 1);
+    populate_lookup_table(byte_lookup_table, root->right, right_bitnum);
 }
 
 void sort_nodes(Node** nodes, size_t length) {
@@ -160,4 +196,26 @@ Node* store_node_in_pool(Node node) {
     assert(global_node_pool_count < GLOBAL_NODE_POOL_CAPACITY);
     global_node_pool[global_node_pool_count++] = node;
     return &global_node_pool[global_node_pool_count - 1];
+}
+
+void append_bit(BitNum* bitnum, char bit) {
+    assert(bitnum->n_bits < sizeof(bitnum->data)*8);
+    bitnum->n_bits += 1;
+    bitnum->data <<= 1;
+    bitnum->data += bit;
+}
+
+bool is_leaf(Node* node) {
+    return node->left == NULL && node->right == NULL;
+}
+
+void print_bits(size_t num, size_t len) {
+    if (len == 0) return;
+
+    for (size_t i = 0; i < len; i++) {
+        size_t bit_index = len - 1 - i;
+        size_t bit = (num >> bit_index) & 1;
+        putchar(bit ? '1' : '0');
+    }
+    putchar('\n');
 }
