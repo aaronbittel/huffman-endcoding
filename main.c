@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <stdlib.h>
 
 typedef uint8_t u8;
 
@@ -29,6 +30,8 @@ typedef struct {
 static Node global_node_pool[GLOBAL_NODE_POOL_CAPACITY];
 static size_t global_node_pool_count = 0;
 
+void encode(FILE* in_f, FILE* out_f, BitNum byte_lookup_table[256]);
+void decode(FILE* in_f, FILE* out_f, Node* root, size_t byte_count);
 Node* generate_huffman_tree(Node** nodes, size_t nodes_count);
 void count_file_byte_freq(FILE* f, size_t freq[256]);
 void count_byte_freq(const u8* data, size_t length, size_t freq[256]);
@@ -43,6 +46,8 @@ Node* store_node_in_pool(Node node);
 void append_bit(BitNum* bitnum, char bit);
 bool is_leaf(Node* node);
 void print_bits(size_t num, size_t len);
+long get_filesize(FILE* f);
+void pexit(const char* msg);
 
 int main(int argc, char** argv) {
     if (argc != 2) {
@@ -51,38 +56,111 @@ int main(int argc, char** argv) {
     }
 
     char* filename = argv[1];
-    FILE* f = fopen(filename, "r");
-    if (f == NULL) perror("fopen failed");
+    FILE* enc_in_f = fopen(filename, "r");
+    if (enc_in_f == NULL) pexit("fopen failed");
+
+    long filesize = get_filesize(enc_in_f);
+    printf("Input filesize: %ld\n", filesize);
 
     size_t freqs[256] = {0};
 
-    count_file_byte_freq(f, freqs);
-    if (fclose(f) == EOF) perror("close failed");
-
-    for (size_t i = 0; i < 256; ++i) {
-        if (freqs[i] == 0) continue;
-        printf("%c => %zu\n", (char)i, freqs[i]);
-    }
+    count_file_byte_freq(enc_in_f, freqs);
 
     Node* nodes[256] = {0};
     size_t nodes_count = 0;
     freqs_to_nodes(freqs, nodes, &nodes_count);
 
     Node* root = generate_huffman_tree(nodes, nodes_count);
-    print_tree(root, 0);
 
     BitNum byte_lookup_table[256] = {0};
     BitNum bitnum = {0};
     populate_lookup_table(byte_lookup_table, root, bitnum);
 
-    for (size_t i = 0; i < 256; ++i) {
-        BitNum bitnum = byte_lookup_table[i];
-        if (bitnum.n_bits == 0) continue;
-        printf("%c ", (char)i);
-        print_bits(bitnum.data, bitnum.n_bits);
+    rewind(enc_in_f);
+    const char* output_path = "encoded.txt";
+    FILE* enc_out_f = fopen(output_path, "w");
+    if (enc_out_f == NULL) pexit("fopen failed");
+
+    encode(enc_in_f, enc_out_f, byte_lookup_table);
+
+    if (fclose(enc_out_f) == EOF) pexit("fclose failed");
+    if (fclose(enc_in_f) == EOF) pexit("fclose failed");
+
+    FILE* dec_in_f = fopen(output_path, "r");
+    if (dec_in_f == NULL) pexit("fopen failed");
+
+    FILE* dec_out_f = fopen("decoded.txt", "w");
+    if (dec_out_f == NULL) pexit("fopen failed");
+
+    decode(dec_in_f, dec_out_f, root, filesize);
+
+    if (fclose(dec_in_f) == EOF) pexit("fclose failed");
+    if (fclose(dec_out_f) == EOF) pexit("fclose failed");
+    return 0;
+}
+
+void encode(FILE* in_f, FILE* out_f, BitNum byte_lookup_table[256]) {
+    bool done = false;
+    char read_buf[BUF_CAPACITY];
+    u8 write_buf[BUF_CAPACITY * 4];
+    size_t cur_byte = 0;
+    int cur_bit = 7;
+    while (!done) {
+        size_t n = fread(read_buf, 1, sizeof(read_buf), in_f);
+        if (n < sizeof(read_buf)) {
+            if (feof(in_f)) done = true;
+            if (ferror(in_f)) pexit("fread failed");
+        }
+        for (size_t i = 0; i < n; ++i) {
+            BitNum bitnum = byte_lookup_table[(u8)read_buf[i]];
+            for (int j = bitnum.n_bits - 1; j >= 0; --j) {
+                int mask = 1 << j;
+                if ((bitnum.data & mask) > 0) {
+                    write_buf[cur_byte] += (1 << cur_bit);
+                }
+                cur_bit--;
+                if (cur_bit < 0) {
+                    assert(cur_byte < ARRAY_LEN(write_buf));
+                    cur_byte += 1;
+                    cur_bit = 7;
+                }
+            }
+        }
+        printf("Encoded file size: %zu bytes\n", fwrite(write_buf, 1, cur_byte+1, out_f));
+    }
+}
+
+void decode(FILE* in_f, FILE* out_f, Node* root, size_t byte_count) {
+    u8 buf[BUF_CAPACITY] = {0};
+    size_t n = fread(buf, 1, sizeof(buf), in_f);
+    if (n < BUF_CAPACITY) {
+        if (ferror(in_f)) pexit("fread failed");
+        assert(feof(in_f));
     }
 
-    return 0;
+    size_t cur_byte = 0;
+    int cur_bit = 7;
+    for (size_t i = 0; i < byte_count; ++i) {
+        Node* cur_node = root;
+        while (true) {
+            size_t mask = 1 << cur_bit;
+            if ((buf[cur_byte] & mask) > 0) {
+                assert(cur_node->right != NULL);
+                cur_node = cur_node->right;
+            } else {
+                cur_node = cur_node->left;
+            }
+            cur_bit -= 1;
+            if (cur_bit < 0) {
+                cur_byte += 1;
+                cur_bit = 7;
+            }
+            if (is_leaf(cur_node)) {
+                fputc(cur_node->byte, out_f);
+                break;
+            }
+        }
+    }
 }
 
 
@@ -109,14 +187,13 @@ Node* generate_huffman_tree(Node** nodes, size_t nodes_count) {
 }
 
 void count_file_byte_freq(FILE* f, size_t freqs[256]) {
+    char buf[BUF_CAPACITY];
     bool done = false;
-
     while (!done) {
-        char buf[BUF_CAPACITY];
         size_t n = fread(buf, 1, sizeof(buf), f);
         if (n < sizeof(buf)) {
-            if (feof(f) != 0) done = true;
-            if (ferror(f) != 0) perror("fread failed");
+            if (feof(f)) done = true;
+            if (ferror(f)) pexit("fread failed");
         }
         count_byte_freq((const u8*) buf, n, freqs);
     }
@@ -218,4 +295,23 @@ void print_bits(size_t num, size_t len) {
         putchar(bit ? '1' : '0');
     }
     putchar('\n');
+}
+
+long get_filesize(FILE* f) {
+    long offset = ftell(f);
+    if (offset < 0L) pexit("ftell failed");
+
+    if (fseek(f, 0, SEEK_END) < 0) pexit("fseek failed");
+
+    long filesize = ftell(f);
+    if (filesize < 0L) pexit("ftell failed");
+
+    if (fseek(f, offset, SEEK_SET) < 0) pexit("fseek failed");
+
+    return filesize;
+}
+
+void pexit(const char* msg) {
+    perror(msg);
+    exit(EXIT_FAILURE);
 }
