@@ -35,8 +35,8 @@ static size_t global_node_pool_count = 0;
 void encode(FILE* in_f, FILE* out_f, BitNum byte_lookup_table[256]);
 void decode(FILE* in_f, FILE* out_f, Node* root);
 Node* generate_huffman_tree(Node** nodes, size_t nodes_count);
-void store_header_information(FILE* f, u64 filesize, size_t freqs[256]);
-void read_header_information(FILE* f, u64* filesize, size_t freqs[256]);
+void store_header_information(FILE* f, size_t freqs[256]);
+void read_header_information(FILE* f, size_t freqs[256]);
 void count_file_byte_freq(FILE* f, size_t freq[256]);
 void count_byte_freq(const u8* data, size_t length, size_t freq[256]);
 void populate_lookup_table(BitNum* byte_lookup_table, Node* root, BitNum bitnum);
@@ -84,7 +84,7 @@ int main(int argc, char** argv) {
     FILE* enc_out_f = fopen(output_path, "w");
     if (enc_out_f == NULL) pexit("fopen failed");
 
-    store_header_information(enc_out_f, (u64)root->weight, freqs);
+    store_header_information(enc_out_f, freqs);
     encode(enc_in_f, enc_out_f, byte_lookup_table);
 
     if (fclose(enc_out_f) == EOF) pexit("fclose failed");
@@ -96,9 +96,8 @@ int main(int argc, char** argv) {
     FILE* dec_out_f = fopen("decoded.txt", "w");
     if (dec_out_f == NULL) pexit("fopen failed");
 
-    u64 filesize;
     size_t dec_freqs[256] = {0};
-    read_header_information(dec_in_f, &filesize, dec_freqs);
+    read_header_information(dec_in_f, dec_freqs);
 
     Node* dec_nodes[256] = {0};
     size_t dec_nodes_count = 0;
@@ -200,14 +199,12 @@ Node* generate_huffman_tree(Node** nodes, size_t nodes_count) {
     return nodes[0];
 }
 
-void store_header_information(FILE* f, u64 filesize, size_t freqs[256]) {
+void store_header_information(FILE* f, size_t freqs[256]) {
     size_t n = fwrite("HUF", 3, 1, f);
     if (n < 3) {
         if (ferror(f)) pexit("fwrite failed");
         assert(!feof(f));
     }
-
-    fwrite(&filesize, sizeof(filesize), 1, f);
 
     u8 count = 0;
     for (size_t i = 0; i < 256; ++i) {
@@ -227,7 +224,7 @@ void store_header_information(FILE* f, u64 filesize, size_t freqs[256]) {
     }
 }
 
-void read_header_information(FILE* f, u64* filesize, size_t freqs[256]) {
+void read_header_information(FILE* f, size_t freqs[256]) {
     char magic[3] = {0};
     assert(fread(magic, 1, sizeof(magic), f) == 3);
     if (memcmp(magic, "HUF", 3) != 0) {
@@ -235,7 +232,7 @@ void read_header_information(FILE* f, u64* filesize, size_t freqs[256]) {
         exit(EXIT_FAILURE);
     }
 
-    assert(fread(filesize, 1, sizeof(u64), f) == sizeof(u64));
+    // assert(fread(filesize, 1, sizeof(u64), f) == sizeof(u64));
 
     u8 char_count;
     assert(fread(&char_count, 1, sizeof(u8), f) == sizeof(u8));
