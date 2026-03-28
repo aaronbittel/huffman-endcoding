@@ -13,6 +13,8 @@ typedef uint64_t u64;
 #define BUF_CAPACITY 8096
 
 #define ARRAY_LEN(arr) (sizeof(arr) / sizeof((arr)[0]))
+// from nob.h (https://github.com/tsoding/nob.h/blob/main/nob.h)
+#define shift_args(xs, xs_sz) (assert((xs_sz) > 0), (xs_sz)--, *(xs)++)
 
 typedef struct Node Node;
 
@@ -28,6 +30,12 @@ typedef struct {
     size_t data;
 } BitNum;
 
+typedef struct {
+    const char* input_path;
+    bool decompress;
+    const char* output_path;
+} Options;
+
 typedef u64 FreqTable[256];
 typedef BitNum ByteLookupTable[256];
 
@@ -35,6 +43,8 @@ typedef BitNum ByteLookupTable[256];
 static Node global_node_pool[GLOBAL_NODE_POOL_CAPACITY];
 static size_t global_node_pool_count = 0;
 
+void encode_file(const char* input_path, const char* output_path);
+void decode_file(const char* input_path, const char* output_path);
 void encode(FILE* in_f, FILE* out_f, ByteLookupTable lookup_table);
 void decode(FILE* in_f, FILE* out_f, Node* root);
 Node* build_huffman_tree(FreqTable freqs);
@@ -56,53 +66,69 @@ bool is_leaf(Node* node);
 void print_bits(size_t num, size_t len);
 long get_filesize(FILE* f);
 void pexit(const char* msg);
-
-// TODO: Add logs
+void print_usage(FILE* f, const char* program_name);
+void parse_args(Options* arg, int argc, char** argv);
+const char* make_output_path(char* output_buf, size_t len, const char* input_path, char* suffix);
 
 int main(int argc, char** argv) {
-    if (argc != 2) {
-        fprintf(stderr, "Usage: %s <file>\n", argv[0]);
-        return 1;
+    Options opt = {0};
+    parse_args(&opt, argc, argv);
+
+    char output_buf[256] = {0};
+    const char* output_path = opt.output_path;
+    if (output_path == NULL) {
+        output_path = make_output_path(output_buf, sizeof(output_buf), opt.input_path, opt.decompress ? "dec" : "enc");
     }
 
-    char* filename = argv[1];
-    FILE* enc_in_f = fopen(filename, "r");
-    if (enc_in_f == NULL) pexit("fopen failed");
+    if (opt.decompress) decode_file(opt.input_path, output_path);
+    else encode_file(opt.input_path, output_path);
+
+    return 0;
+}
+
+void encode_file(const char* input_path, const char* output_path) {
+    FILE* in_f = fopen(input_path, "r");
+    if (in_f == NULL) pexit("fopen failed");
+
+    FILE* out_f = fopen(output_path, "w");
+    if (out_f == NULL) pexit("fopen failed");
 
     FreqTable freqs = {0};
-    count_file_byte_freq(enc_in_f, freqs);
+    count_file_byte_freq(in_f, freqs);
     Node* root = build_huffman_tree(freqs);
+
+    store_header_information(out_f, freqs);
 
     ByteLookupTable lookup_table = {0};
     BitNum bitnum = {0};
     populate_lookup_table(lookup_table, root, bitnum);
 
-    rewind(enc_in_f);
-    const char* output_path = "encoded.txt";
-    FILE* enc_out_f = fopen(output_path, "w");
-    if (enc_out_f == NULL) pexit("fopen failed");
+    rewind(in_f);
+    encode(in_f, out_f, lookup_table);
 
-    store_header_information(enc_out_f, freqs);
-    encode(enc_in_f, enc_out_f, lookup_table);
+    if (fclose(out_f) == EOF) pexit("fclose failed");
+    if (fclose(in_f) == EOF) pexit("fclose failed");
 
-    if (fclose(enc_out_f) == EOF) pexit("fclose failed");
-    if (fclose(enc_in_f) == EOF) pexit("fclose failed");
+    printf("Encoded `%s` into `%s`\n", input_path, output_path);
+}
 
-    FILE* dec_in_f = fopen(output_path, "r");
-    if (dec_in_f == NULL) pexit("fopen failed");
+void decode_file(const char* input_path, const char* output_path) {
+    FILE* in_f = fopen(input_path, "r");
+    if (in_f == NULL) pexit("fopen failed");
 
-    FILE* dec_out_f = fopen("decoded.txt", "w");
-    if (dec_out_f == NULL) pexit("fopen failed");
+    FILE* out_f = fopen(output_path, "w");
+    if (out_f == NULL) pexit("fopen failed");
 
-    FreqTable dec_freqs = {0};
-    read_header_information(dec_in_f, dec_freqs);
+    FreqTable freqs = {0};
+    read_header_information(in_f, freqs);
 
-    Node* dec_root = build_huffman_tree(freqs);
-    decode(dec_in_f, dec_out_f, dec_root);
+    Node* root = build_huffman_tree(freqs);
+    decode(in_f, out_f, root);
 
-    if (fclose(dec_in_f) == EOF) pexit("fclose failed");
-    if (fclose(dec_out_f) == EOF) pexit("fclose failed");
-    return 0;
+    if (fclose(in_f) == EOF) pexit("fclose failed");
+    if (fclose(out_f) == EOF) pexit("fclose failed");
+
+    printf("Decoded `%s` into `%s`\n", input_path, output_path);
 }
 
 void encode(FILE* in_f, FILE* out_f, ByteLookupTable lookup_table) {
@@ -374,4 +400,69 @@ long get_filesize(FILE* f) {
 void pexit(const char* msg) {
     perror(msg);
     exit(EXIT_FAILURE);
+}
+
+void print_usage(FILE* f, const char* program_name) {
+    fprintf(f, "Usage:\n");
+    fprintf(f, "  %s [OPTIONS] <input_file>\n\n", program_name);
+
+    fprintf(f, "Description:\n");
+    fprintf(f, "  Compress or decompress a file using Huffman encoding.\n\n");
+
+    fprintf(f, "Options:\n");
+    fprintf(f, "  -d, --decompress        Decompress the input file\n");
+    fprintf(f, "  -o, --output <file>     Write output to <file>\n");
+    fprintf(f, "                          (default: stdout or inferred name)\n");
+    fprintf(f, "\n");
+}
+
+void parse_args(Options* opt, int argc, char** argv) {
+    char* program_name = shift_args(argv, argc);
+
+    if (argc < 1) {
+        print_usage(stderr, program_name);
+        fprintf(stderr, "ERROR: no input file provided\n");
+        exit(EXIT_FAILURE);
+    }
+
+    while (argc > 0) {
+        char* arg = shift_args(argv, argc);
+        if (strcmp(arg, "--decompress") == 0 || strcmp(arg, "-d") == 0) {
+            opt->decompress = true;
+        } else if (strcmp(arg, "--output") == 0 || strcmp(arg, "-o") == 0) {
+            if (opt->output_path != NULL) {
+                print_usage(stderr, program_name);
+                fprintf(stderr, "ERROR: `--output` flag already provided: `%s`\n", opt->output_path);
+                exit(EXIT_FAILURE);
+            }
+            if (argc < 1) {
+                print_usage(stderr, program_name);
+                fprintf(stderr, "ERROR: no output filename provided with `--output`\n");
+                exit(EXIT_FAILURE);
+            }
+            opt->output_path = shift_args(argv, argc);
+        } else {
+            if (opt->input_path != NULL) {
+                print_usage(stderr, program_name);
+                fprintf(stderr, "ERROR: input_path `%s` already provided\n", opt->input_path);
+                exit(EXIT_FAILURE);
+            }
+            opt->input_path = arg;
+        }
+    }
+
+    if (opt->input_path == NULL) {
+        print_usage(stderr, program_name);
+        fprintf(stderr, "ERROR: no input_path provided\n");
+        exit(EXIT_FAILURE);
+    }
+}
+
+const char* make_output_path(char* output_buf, size_t len, const char* input_path, char* suffix) {
+    int n = snprintf(output_buf, len, "%s.%s", input_path, suffix);
+    if (n < 0 || n >= (int)len) {
+        fprintf(stderr, "ERROR: default output_path would be truncated. Please provide a output_path using `--output` flag.\n");
+        exit(EXIT_FAILURE);
+    }
+    return output_buf;
 }
