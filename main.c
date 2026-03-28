@@ -75,10 +75,13 @@ int main(int argc, char** argv) {
     parse_args(&opt, argc, argv);
 
     char output_buf[256] = {0};
-    const char* output_path = opt.output_path;
-    if (output_path == NULL) {
-        output_path = make_output_path(output_buf, sizeof(output_buf), opt.input_path, opt.decompress ? "dec" : "enc");
-    }
+    const char* output_path = opt.output_path
+        ? opt.output_path
+        : make_output_path(
+            output_buf,
+            sizeof(output_buf),
+            opt.input_path,
+            opt.decompress ? "dec" : "enc");
 
     if (opt.decompress) decode_file(opt.input_path, output_path);
     else encode_file(opt.input_path, output_path);
