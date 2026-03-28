@@ -28,21 +28,25 @@ typedef struct {
     size_t data;
 } BitNum;
 
+typedef u64 FreqTable[256];
+typedef BitNum ByteLookupTable[256];
+
 #define GLOBAL_NODE_POOL_CAPACITY 8096
 static Node global_node_pool[GLOBAL_NODE_POOL_CAPACITY];
 static size_t global_node_pool_count = 0;
 
-void encode(FILE* in_f, FILE* out_f, BitNum byte_lookup_table[256]);
+void encode(FILE* in_f, FILE* out_f, ByteLookupTable lookup_table);
 void decode(FILE* in_f, FILE* out_f, Node* root);
+Node* build_huffman_tree(FreqTable freqs);
 Node* generate_huffman_tree(Node** nodes, size_t nodes_count);
-void store_header_information(FILE* f, size_t freqs[256]);
-void read_header_information(FILE* f, size_t freqs[256]);
-void count_file_byte_freq(FILE* f, size_t freq[256]);
-void count_byte_freq(const u8* data, size_t length, size_t freq[256]);
+void store_header_information(FILE* f, FreqTable freqs);
+void read_header_information(FILE* f, FreqTable freqs);
+void count_file_byte_freq(FILE* f, FreqTable freqs);
+void count_byte_freq(const u8* data, size_t length, FreqTable freqs);
 void populate_lookup_table(BitNum* byte_lookup_table, Node* root, BitNum bitnum);
 void sort_nodes(Node** nodes, size_t length);
 void swap_nodes(Node** nodes, size_t i, size_t j);
-void freqs_to_nodes(size_t freq[256], Node** nodes, size_t* nodes_count);
+void freqs_to_nodes(FreqTable freqs, Node** nodes, size_t* nodes_count);
 void print_nodes(Node** nodes, size_t length);
 void print_tree(Node* root, int indent);
 void print_pad(int indent);
@@ -65,19 +69,13 @@ int main(int argc, char** argv) {
     FILE* enc_in_f = fopen(filename, "r");
     if (enc_in_f == NULL) pexit("fopen failed");
 
-    size_t freqs[256] = {0};
-
+    FreqTable freqs = {0};
     count_file_byte_freq(enc_in_f, freqs);
+    Node* root = build_huffman_tree(freqs);
 
-    Node* nodes[256] = {0};
-    size_t nodes_count = 0;
-    freqs_to_nodes(freqs, nodes, &nodes_count);
-
-    Node* root = generate_huffman_tree(nodes, nodes_count);
-
-    BitNum byte_lookup_table[256] = {0};
+    ByteLookupTable lookup_table = {0};
     BitNum bitnum = {0};
-    populate_lookup_table(byte_lookup_table, root, bitnum);
+    populate_lookup_table(lookup_table, root, bitnum);
 
     rewind(enc_in_f);
     const char* output_path = "encoded.txt";
@@ -85,7 +83,7 @@ int main(int argc, char** argv) {
     if (enc_out_f == NULL) pexit("fopen failed");
 
     store_header_information(enc_out_f, freqs);
-    encode(enc_in_f, enc_out_f, byte_lookup_table);
+    encode(enc_in_f, enc_out_f, lookup_table);
 
     if (fclose(enc_out_f) == EOF) pexit("fclose failed");
     if (fclose(enc_in_f) == EOF) pexit("fclose failed");
@@ -96,15 +94,10 @@ int main(int argc, char** argv) {
     FILE* dec_out_f = fopen("decoded.txt", "w");
     if (dec_out_f == NULL) pexit("fopen failed");
 
-    size_t dec_freqs[256] = {0};
+    FreqTable dec_freqs = {0};
     read_header_information(dec_in_f, dec_freqs);
 
-    Node* dec_nodes[256] = {0};
-    size_t dec_nodes_count = 0;
-    freqs_to_nodes(dec_freqs, dec_nodes, &dec_nodes_count);
-
-    Node* dec_root = generate_huffman_tree(dec_nodes, dec_nodes_count);
-
+    Node* dec_root = build_huffman_tree(freqs);
     decode(dec_in_f, dec_out_f, dec_root);
 
     if (fclose(dec_in_f) == EOF) pexit("fclose failed");
@@ -112,7 +105,7 @@ int main(int argc, char** argv) {
     return 0;
 }
 
-void encode(FILE* in_f, FILE* out_f, BitNum byte_lookup_table[256]) {
+void encode(FILE* in_f, FILE* out_f, ByteLookupTable lookup_table) {
     bool done = false;
     char read_buf[BUF_CAPACITY];
     u8 write_buf[BUF_CAPACITY * 4];
@@ -125,7 +118,7 @@ void encode(FILE* in_f, FILE* out_f, BitNum byte_lookup_table[256]) {
             if (ferror(in_f)) pexit("fread failed");
         }
         for (size_t i = 0; i < n; ++i) {
-            BitNum bitnum = byte_lookup_table[(u8)read_buf[i]];
+            BitNum bitnum = lookup_table[(u8)read_buf[i]];
             for (int j = bitnum.n_bits - 1; j >= 0; --j) {
                 int mask = 1 << j;
                 if ((bitnum.data & mask) > 0) {
@@ -176,6 +169,13 @@ void decode(FILE* in_f, FILE* out_f, Node* root) {
     }
 }
 
+Node* build_huffman_tree(FreqTable freqs) {
+    Node* nodes[256] = {0};
+    size_t nodes_count = 0;
+    freqs_to_nodes(freqs, nodes, &nodes_count);
+
+    return generate_huffman_tree(nodes, nodes_count);
+}
 
 Node* generate_huffman_tree(Node** nodes, size_t nodes_count) {
     sort_nodes(nodes, nodes_count);
@@ -199,7 +199,7 @@ Node* generate_huffman_tree(Node** nodes, size_t nodes_count) {
     return nodes[0];
 }
 
-void store_header_information(FILE* f, size_t freqs[256]) {
+void store_header_information(FILE* f, FreqTable freqs) {
     size_t n = fwrite("HUF", 3, 1, f);
     if (n < 3) {
         if (ferror(f)) pexit("fwrite failed");
@@ -224,7 +224,7 @@ void store_header_information(FILE* f, size_t freqs[256]) {
     }
 }
 
-void read_header_information(FILE* f, size_t freqs[256]) {
+void read_header_information(FILE* f, FreqTable freqs) {
     char magic[3] = {0};
     assert(fread(magic, 1, sizeof(magic), f) == 3);
     if (memcmp(magic, "HUF", 3) != 0) {
@@ -246,7 +246,7 @@ void read_header_information(FILE* f, size_t freqs[256]) {
     }
 }
 
-void count_file_byte_freq(FILE* f, size_t freqs[256]) {
+void count_file_byte_freq(FILE* f, FreqTable freqs) {
     char buf[BUF_CAPACITY];
     bool done = false;
     while (!done) {
@@ -259,9 +259,9 @@ void count_file_byte_freq(FILE* f, size_t freqs[256]) {
     }
 }
 
-void count_byte_freq(const u8* data, size_t length, size_t freq[256]) {
+void count_byte_freq(const u8* data, size_t length, FreqTable freqs) {
     for (size_t i = 0; i < length; ++i) {
-        freq[data[i]] += 1;
+        freqs[data[i]] += 1;
     }
 }
 
@@ -296,7 +296,7 @@ void swap_nodes(Node** nodes, size_t i, size_t j) {
     nodes[j] = tmp;
 }
 
-void freqs_to_nodes(size_t freqs[256], Node** nodes, size_t* nodes_count) {
+void freqs_to_nodes(FreqTable freqs, Node** nodes, size_t* nodes_count) {
     *nodes_count = 0;
     for (size_t i = 0; i < 256; ++i) {
         if (freqs[i] == 0) continue;
