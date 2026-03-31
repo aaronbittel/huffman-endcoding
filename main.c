@@ -59,12 +59,12 @@ void swap_nodes(Node** nodes, size_t i, size_t j);
 void freqs_to_nodes(FreqTable freqs, Node** nodes, size_t* nodes_count);
 void print_nodes(Node** nodes, size_t length);
 void print_tree(Node* root, int indent);
+void print_lookup_table(ByteLookupTable* lookup_table);
 void print_pad(int indent);
 Node* store_node_in_pool(Node node);
 void append_bit(BitNum* bitnum, char bit);
 bool is_leaf(Node* node);
 void print_bits(size_t num, size_t len);
-long get_filesize(FILE* f);
 void pexit(const char* msg);
 void print_usage(FILE* f, const char* program_name);
 void parse_args(Options* arg, int argc, char** argv);
@@ -105,6 +105,7 @@ void encode_file(const char* input_path, const char* output_path) {
     ByteLookupTable lookup_table = {0};
     BitNum bitnum = {0};
     populate_lookup_table(lookup_table, root, bitnum);
+    print_lookup_table(&lookup_table);
 
     rewind(in_f);
     encode(in_f, out_f, lookup_table);
@@ -351,6 +352,16 @@ void print_tree(Node* root, int indent) {
 
 }
 
+void print_lookup_table(ByteLookupTable* lookup_table) {
+    for (size_t i = 0; i < 256; ++i) {
+        BitNum bitnum = (*lookup_table)[i];
+        if (bitnum.n_bits == 0) continue;
+        if (isalnum(i)) printf("%c => ", (char)i);
+        else printf("%zu => ", i);
+        print_bits(bitnum.data, bitnum.n_bits);
+    }
+}
+
 void print_pad(int indent) {
     for (int i = 0; i < indent; ++i) {
         printf(" ");
@@ -384,20 +395,6 @@ void print_bits(size_t num, size_t len) {
         putchar(bit ? '1' : '0');
     }
     putchar('\n');
-}
-
-long get_filesize(FILE* f) {
-    long offset = ftell(f);
-    if (offset < 0L) pexit("ftell failed");
-
-    if (fseek(f, 0, SEEK_END) < 0) pexit("fseek failed");
-
-    long filesize = ftell(f);
-    if (filesize < 0L) pexit("ftell failed");
-
-    if (fseek(f, offset, SEEK_SET) < 0) pexit("fseek failed");
-
-    return filesize;
 }
 
 void pexit(const char* msg) {
